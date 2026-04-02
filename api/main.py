@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api.routes import statements, dashboard, recommendations, chat, health
+from api.routes import manual_entries
 
 app = FastAPI(
     title="VenaNow Financial Intelligence API",
@@ -34,7 +35,7 @@ app.include_router(dashboard.router,       prefix="/api/dashboard",       tags=[
 app.include_router(recommendations.router, prefix="/api/recommendations", tags=["Recommendations"])
 app.include_router(health.router,          prefix="/api/health-score",    tags=["Health Score"])
 app.include_router(chat.router,            prefix="/api/chat",            tags=["AI Assistant"])
-
+app.include_router(manual_entries.router, prefix="/api/manual", tags=["Manual Entries"])
 
 @app.get("/api/ping")
 def ping():
