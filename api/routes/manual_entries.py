@@ -1,106 +1,106 @@
-"""
-api/routes/manual_entries.py
+# api/routes/manual_entries.py
+# Handles manual transaction entries (cash, mobile money, etc.)
+# that are not captured in bank statements.
 
-Manual transaction entry endpoint.
-Allows users to add cash, mobile money, and other off-bank transactions.
-Stores in-memory per user session (wire to DB for persistence).
-"""
-
-from __future__ import annotations
-
-import uuid
-from datetime import date, datetime
-from typing import Optional, List
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import Optional
+from datetime import date
+import uuid
 
 router = APIRouter()
 
-# In-memory store per user — replace with DB in production
-_manual_store: dict[str, list[dict]] = {}
-
-VALID_CATEGORIES = [
-    "food", "transport", "rent", "utilities", "subscriptions",
-    "transfers", "business", "miscellaneous", "income", "freelance", "investment"
-]
-
-VALID_CHANNELS = ["Cash", "Mobile Money", "USSD", "POS", "Bank Transfer", "Other"]
+# ---------------------------------------------------------------------------
+# In-memory store (Phase 1)
+# Replace this dict with Supabase DB calls in Phase 2.
+# Key: user_id → list of entry dicts
+# ---------------------------------------------------------------------------
+_store: dict[str, list[dict]] = {}
 
 
-class ManualEntryRequest(BaseModel):
+# ---------------------------------------------------------------------------
+# Request / Response schemas
+# ---------------------------------------------------------------------------
+
+class ManualEntryCreate(BaseModel):
     user_id: str
-    tx_date: str           # ISO format: 2026-03-15
+    tx_date: date
     description: str
-    amount: float
-    tx_type: str           # 'debit' or 'credit'
-    category: str
-    channel: str = "Cash"
-    notes: Optional[str] = None
+    amount: float               # positive = credit, negative = debit
+    tx_type: str                # "credit" or "debit"
+    category: Optional[str] = "miscellaneous"
+    channel: Optional[str] = "cash"
+    notes: Optional[str] = ""
 
 
 class ManualEntryResponse(BaseModel):
-    id: str
+    entry_id: str
     user_id: str
-    tx_date: str
+    tx_date: date
     description: str
     amount: float
     tx_type: str
     category: str
     channel: str
-    notes: Optional[str]
-    source: str = "manual"
-    created_at: str
+    notes: str
 
 
-@router.post("", response_model=ManualEntryResponse)
-async def add_manual_entry(entry: ManualEntryRequest):
-    """Add a manual transaction (cash, mobile money, etc.)"""
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
-    # Validate
-    if entry.tx_type not in ("debit", "credit"):
-        from fastapi import HTTPException
-        raise HTTPException(400, "tx_type must be 'debit' or 'credit'")
-    if entry.category not in VALID_CATEGORIES:
-        from fastapi import HTTPException
-        raise HTTPException(400, f"Invalid category. Choose from: {VALID_CATEGORIES}")
-    if entry.amount <= 0:
-        from fastapi import HTTPException
-        raise HTTPException(400, "Amount must be greater than 0")
-
+@router.post("", response_model=ManualEntryResponse, status_code=201)
+async def add_manual_entry(entry: ManualEntryCreate):
+    """Add a manual transaction entry for a user."""
+    entry_id = str(uuid.uuid4())
     record = {
-        "id":          str(uuid.uuid4()),
-        "user_id":     entry.user_id,
-        "tx_date":     entry.tx_date,
-        "description": entry.description.strip(),
-        "amount":      round(entry.amount, 2),
-        "tx_type":     entry.tx_type,
-        "category":    entry.category,
-        "channel":     entry.channel,
-        "notes":       entry.notes,
-        "source":      "manual",
-        "balance":     None,
-        "fingerprint": str(uuid.uuid4()),
-        "created_at":  datetime.utcnow().isoformat(),
+        "entry_id": entry_id,
+        "user_id": entry.user_id,
+        "tx_date": entry.tx_date.isoformat(),
+        "description": entry.description,
+        "amount": entry.amount,
+        "tx_type": entry.tx_type,
+        "category": entry.category or "miscellaneous",
+        "channel": entry.channel or "cash",
+        "notes": entry.notes or "",
     }
-
-    if entry.user_id not in _manual_store:
-        _manual_store[entry.user_id] = []
-    _manual_store[entry.user_id].append(record)
-
+    _store.setdefault(entry.user_id, []).append(record)
     return record
 
 
-@router.get("/{user_id}", response_model=List[ManualEntryResponse])
+@router.get("/{user_id}", response_model=list[ManualEntryResponse])
 async def get_manual_entries(user_id: str):
     """Get all manual entries for a user."""
-    return _manual_store.get(user_id, [])
+    return _store.get(user_id, [])
 
 
-@router.delete("/{user_id}/{entry_id}")
+@router.delete("/{user_id}/{entry_id}", status_code=204)
 async def delete_manual_entry(user_id: str, entry_id: str):
     """Delete a specific manual entry."""
-    entries = _manual_store.get(user_id, [])
+    entries = _store.get(user_id, [])
     original_len = len(entries)
-    _manual_store[user_id] = [e for e in entries if e["id"] != entry_id]
-    deleted = original_len - len(_manual_store[user_id])
-    return {"deleted": deleted, "id": entry_id}
+    _store[user_id] = [e for e in entries if e["entry_id"] != entry_id]
+    if len(_store[user_id]) == original_len:
+        raise HTTPException(status_code=404, detail="Entry not found")
+
+
+@router.put("/{user_id}/{entry_id}", response_model=ManualEntryResponse)
+async def update_manual_entry(user_id: str, entry_id: str, updates: ManualEntryCreate):
+    """Update a manual entry (full replace)."""
+    entries = _store.get(user_id, [])
+    for i, e in enumerate(entries):
+        if e["entry_id"] == entry_id:
+            updated = {
+                "entry_id": entry_id,
+                "user_id": user_id,
+                "tx_date": updates.tx_date.isoformat(),
+                "description": updates.description,
+                "amount": updates.amount,
+                "tx_type": updates.tx_type,
+                "category": updates.category or "miscellaneous",
+                "channel": updates.channel or "cash",
+                "notes": updates.notes or "",
+            }
+            entries[i] = updated
+            return updated
+    raise HTTPException(status_code=404, detail="Entry not found")
