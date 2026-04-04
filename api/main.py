@@ -1,16 +1,14 @@
 """
 api/main.py
-
 VenaNow FastAPI application.
 All routes are prefixed with /api.
 """
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
 from api.routes import statements, dashboard, recommendations, chat, health
 from api.routes import manual_entries
+from api.routes import jobs
 
 app = FastAPI(
     title="VenaNow Financial Intelligence API",
@@ -35,12 +33,12 @@ app.include_router(dashboard.router,       prefix="/api/dashboard",       tags=[
 app.include_router(recommendations.router, prefix="/api/recommendations", tags=["Recommendations"])
 app.include_router(health.router,          prefix="/api/health-score",    tags=["Health Score"])
 app.include_router(chat.router,            prefix="/api/chat",            tags=["AI Assistant"])
-app.include_router(manual_entries.router, prefix="/api/manual", tags=["Manual Entries"])
+app.include_router(manual_entries.router,  prefix="/api/manual",          tags=["Manual Entries"])
+app.include_router(jobs.router,            prefix="/api/jobs",            tags=["Jobs"])
 
 @app.get("/api/ping")
 def ping():
     return {"status": "ok", "service": "VenaNow API v1.0"}
-
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
