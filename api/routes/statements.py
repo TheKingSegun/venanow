@@ -17,6 +17,7 @@ from analytics.recommender import generate_recommendations
 from analytics.health_score import compute_health_score
 from analytics.forecaster import forecast_cashflow
 from utils.logger import logger
+import math
 
 router = APIRouter()
 
@@ -118,7 +119,21 @@ async def upload_statement(
     # Clean up temp file (can be moved to background task in production)
     # save_path.unlink(missing_ok=True)
 
-    return response
+    # Clean up temp file (can be moved to background task in production)
+    # save_path.unlink(missing_ok=True)
+
+    return _sanitize(response)
+
+
+def _sanitize(obj):
+    """Recursively replace NaN/Infinity floats with None for JSON compliance."""
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize(i) for i in obj]
+    return obj
 
 
 @router.get("/history/{user_id}")
