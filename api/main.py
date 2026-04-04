@@ -1,33 +1,15 @@
 """
-api/main.py
-VenaNow FastAPI application.
-All routes are prefixed with /api.
+api/main.py — VenaNow FastAPI application.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from api.routes import statements, dashboard, recommendations, chat, health
-from api.routes import manual_entries
-from api.routes import jobs
+from api.routes import statements, dashboard, recommendations, chat, health, manual_entries, jobs
 
-app = FastAPI(
-    title="VenaNow Financial Intelligence API",
-    description="Backend API for Nigerian personal finance tracking and AI-powered insights.",
-    version="1.0.0",
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-)
+app = FastAPI(title="VenaNow API", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc")
 
-# CORS — allow all origins (covers Netlify, custom domains, and local dev)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
-# Register routers
 app.include_router(statements.router,      prefix="/api/statements",      tags=["Statements"])
 app.include_router(dashboard.router,       prefix="/api/dashboard",       tags=["Dashboard"])
 app.include_router(recommendations.router, prefix="/api/recommendations", tags=["Recommendations"])
@@ -42,7 +24,4 @@ def ping():
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    return JSONResponse(
-        status_code=500,
-        content={"error": str(exc), "detail": "An unexpected error occurred."},
-    )
+    return JSONResponse(status_code=500, content={"error": str(exc), "detail": "An unexpected error occurred."})
