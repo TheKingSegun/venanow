@@ -8,9 +8,17 @@ JOB_STORE is an in-memory dict — jobs are lost on Render restart.
 In production this will be replaced with a Supabase jobs table.
 """
 
-from enum import str as str_enum
 from fastapi import APIRouter, HTTPException
 
+router = APIRouter()
+
+class JobStatus:
+    PENDING    = "pending"
+    PROCESSING = "processing"
+    COMPLETE   = "complete"
+    FAILED     = "failed"
+
+JOB_STORE: dict[str, dict] = {}
 router = APIRouter()
 
 
