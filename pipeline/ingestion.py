@@ -80,77 +80,181 @@ def ingest_statement(
 
 # ── PDF Parser ────────────────────────────────────────────────────────────────
 
+KNOWN_HEADER_KEYWORDS = {
+    "date", "trans date", "transaction date", "value date", "posting date",
+    "narration", "description", "details", "remarks", "particulars", "reference",
+    "debit", "credit", "withdrawal", "deposit", "withdrawals", "deposits",
+    "amount", "dr", "cr", "balance", "ledger balance", "closing balance",
+    "type", "transaction type", "channel",
+}
+
+
+def _is_header_row(row: list) -> bool:
+    """Return True if this table row looks like a column header row."""
+    if not row:
+        return False
+    cells = [str(c or "").strip().lower() for c in row]
+    non_empty = [c for c in cells if c]
+    if len(non_empty) < 2:
+        return False
+    matches = sum(
+        1 for c in non_empty
+        if c in KNOWN_HEADER_KEYWORDS
+        or any(k in c for k in KNOWN_HEADER_KEYWORDS)
+    )
+    return matches >= 2
+
+
+def _normalize_headers(row: list) -> list[str]:
+    """Clean and normalize a header row into usable keys."""
+    return [str(h or "").strip().lower().replace("\n", " ") for h in row]
+
+
 def _parse_pdf(path: Path) -> pd.DataFrame:
     """
     Extract transactions from a bank statement PDF using pdfplumber.
-    Tries table extraction first; falls back to line-by-line regex parsing.
+    Strategy:
+      1. Try table extraction on each page — find the real header row
+         by scanning (not assuming row 0 is always the header).
+      2. Fall back to line-by-line regex if no tables found on a page.
+    Aggregates all pages before deciding if extraction failed.
     """
-    rows: list[dict] = []
+    all_rows: list[dict] = []
+    last_headers: list[str] | None = None
 
     with pdfplumber.open(path) as pdf:
         logger.debug(f"PDF has {len(pdf.pages)} page(s).")
 
         for page_num, page in enumerate(pdf.pages, 1):
-            tables = page.extract_tables()
+            # Try structured table extraction with explicit line strategy first
+            tables = page.extract_tables({
+                "vertical_strategy": "lines",
+                "horizontal_strategy": "lines",
+            }) or page.extract_tables()
+
+            page_rows: list[dict] = []
 
             if tables:
                 for table in tables:
-                    parsed = _parse_pdf_table(table)
-                    rows.extend(parsed)
-                    logger.debug(f"Page {page_num}: {len(parsed)} rows from table.")
-            else:
-                # Fallback: parse raw text lines with regex
+                    extracted = _parse_pdf_table(table, last_headers)
+                    if extracted["rows"]:
+                        page_rows.extend(extracted["rows"])
+                        last_headers = extracted["headers"]
+
+            if not page_rows:
+                # Fallback: raw text regex
                 text = page.extract_text() or ""
-                parsed = _parse_pdf_text(text)
-                rows.extend(parsed)
-                logger.debug(f"Page {page_num}: {len(parsed)} rows from text (no table).")
+                page_rows = _parse_pdf_text(text)
+                logger.debug(f"Page {page_num}: text fallback → {len(page_rows)} rows.")
+            else:
+                logger.debug(f"Page {page_num}: {len(page_rows)} rows from table.")
 
-    if not rows:
-        raise ValueError("No transactions found in PDF. Check that it is a standard bank statement.")
+            all_rows.extend(page_rows)
 
-    return pd.DataFrame(rows)
+    if not all_rows:
+        raise ValueError(
+            "Could not read statement. The PDF format may not be supported yet. "
+            "Please try exporting your statement as CSV from your bank's app, "
+            "or contact support with your bank name."
+        )
+
+    return pd.DataFrame(all_rows)
 
 
-def _parse_pdf_table(table: list[list]) -> list[dict]:
+def _parse_pdf_table(
+    table: list[list],
+    fallback_headers: list[str] | None = None,
+) -> dict:
     """
-    Convert a pdfplumber table (list of lists) into raw row dicts.
-    Handles tables where header is in first row.
+    Convert a pdfplumber table into row dicts.
+
+    Scans ALL rows to find the real header — Nigerian bank statement PDFs
+    commonly have 1-4 metadata rows before column headers (account name,
+    statement period, branch info, etc).
+
+    Returns: {"headers": [...], "rows": [...]}
     """
     if not table or len(table) < 2:
-        return []
+        return {"headers": fallback_headers or [], "rows": []}
 
-    # Normalize headers
-    headers = [str(h or "").strip().lower() for h in table[0]]
+    # Scan every row to find the first header row
+    header_idx = None
+    for i, row in enumerate(table):
+        if _is_header_row(row):
+            header_idx = i
+            break
+
+    if header_idx is None:
+        if fallback_headers:
+            # Continuation page — no header, use previous page's headers
+            headers = fallback_headers
+            data_rows = table
+        else:
+            # Absolute last resort: assume row 0 is header
+            headers = _normalize_headers(table[0])
+            data_rows = table[1:]
+    else:
+        headers = _normalize_headers(table[header_idx])
+        data_rows = table[header_idx + 1:]
+
+    # Remove empty header slots (merged cells produce empty strings)
+    # by giving them a placeholder so column count stays aligned
+    headers = [h if h else f"_col{i}" for i, h in enumerate(headers)]
+
     rows = []
-
-    for raw_row in table[1:]:
-        if not raw_row or all(cell is None or str(cell).strip() == "" for cell in raw_row):
+    for raw_row in data_rows:
+        if not raw_row:
             continue
-        row = {headers[i]: str(raw_row[i] or "").strip() for i in range(min(len(headers), len(raw_row)))}
+        cells = [str(c or "").strip() for c in raw_row]
+        if all(c == "" for c in cells):
+            continue
+
+        # Skip summary / sub-header rows
+        joined = " ".join(cells).lower()
+        if any(skip in joined for skip in [
+            "opening balance", "closing balance", "brought forward",
+            "carried forward", "total", "sub total", "page total",
+            "transaction count", "statement of account",
+        ]):
+            continue
+
+        row = {}
+        for i, h in enumerate(headers):
+            row[h] = cells[i] if i < len(cells) else ""
         rows.append(row)
 
-    return rows
+    return {"headers": headers, "rows": rows}
 
 
-# Regex to catch lines like: "15/03/2026  POS SHOPRITE LEKKI   18,600.00   1,042,000.00"
+# Regex handles dates like: 01/03/2026, 01-03-2026, 2026-03-01
 PDF_LINE_RE = re.compile(
-    r"(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})"  # date
-    r"\s+(.+?)\s+"                              # description
-    r"([\d,]+\.?\d*)\s*"                        # amount
-    r"([\d,]+\.?\d*)?"                          # balance (optional)
+    r"(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\d{4}[\/\-]\d{2}[\/\-]\d{2})"
+    r"[ \t]+(.+?)[ \t]+"
+    r"([\d,]+\.?\d*(?:\s*(?:DR|CR))?)\s*"
+    r"([\d,]+\.?\d*)?"
+    , re.IGNORECASE
 )
 
+
 def _parse_pdf_text(text: str) -> list[dict]:
-    """Last-resort: extract transactions from raw PDF text via regex."""
+    """
+    Last-resort: extract transactions from raw PDF text via regex.
+    Handles lines like:
+      15/03/2026  POS SHOPRITE LEKKI   18,600.00DR   1,042,000.00
+      2026-03-15  Transfer to Segun    5,000.00       999,000.00
+    """
     rows = []
     for line in text.splitlines():
+        line = line.strip()
+        if not line or len(line) < 15:
+            continue
         m = PDF_LINE_RE.search(line)
         if m:
             rows.append({
                 "date": m.group(1),
                 "description": m.group(2).strip(),
-                "amount": m.group(3),
-                "balance": m.group(4) or "",
+                "amount": m.group(3).strip(),
+                "balance": (m.group(4) or "").strip(),
             })
     return rows
 
@@ -162,10 +266,8 @@ def _parse_csv(path: Path) -> pd.DataFrame:
     Parse a CSV bank statement. Detects encoding, skips metadata rows,
     and sniffs the bank profile for correct column mapping.
     """
-    # Find the real header row (first row that looks like column headers)
     header_row = _find_header_row(path)
-    
-    # Try common encodings
+
     for enc in ("utf-8", "latin-1", "cp1252"):
         try:
             df = pd.read_csv(
@@ -176,7 +278,6 @@ def _parse_csv(path: Path) -> pd.DataFrame:
         except UnicodeDecodeError:
             continue
         except Exception:
-            # Fallback: no skip
             try:
                 df = pd.read_csv(path, encoding=enc, dtype=str, skip_blank_lines=True)
                 break
@@ -223,7 +324,6 @@ def _apply_profile(df: pd.DataFrame, profile: BankProfile) -> pd.DataFrame:
     """
     result = pd.DataFrame()
 
-    # Date — try profile format first, fall back to "mixed" for flexibility
     result["tx_date"] = pd.to_datetime(
         df[profile.date_col], format=profile.date_format, errors="coerce"
     ).dt.date
@@ -232,31 +332,25 @@ def _apply_profile(df: pd.DataFrame, profile: BankProfile) -> pd.DataFrame:
             df[profile.date_col], format="mixed", errors="coerce"
         ).dt.date
 
-    # Description
     result["raw_desc"] = df[profile.desc_col].fillna("").str.strip()
 
-    # Balance
     if profile.balance_col and profile.balance_col in df.columns:
         result["balance"] = df[profile.balance_col].apply(parse_naira)
     else:
         result["balance"] = None
 
-    # Amount & Type
     if profile.debit_col and profile.credit_col:
-        # Split debit/credit columns
         debit_amt  = df[profile.debit_col].apply(parse_naira)
         credit_amt = df[profile.credit_col].apply(parse_naira)
         result["amount"]  = debit_amt.where(debit_amt > 0, credit_amt)
         result["tx_type"] = debit_amt.apply(lambda x: "debit" if x > 0 else "credit")
     elif profile.amount_col and profile.type_col:
-        # Unified amount + type column
         result["amount"] = df[profile.amount_col].apply(parse_naira)
         type_raw = df[profile.type_col].str.lower().str.strip()
         result["tx_type"] = type_raw.apply(
             lambda t: "credit" if any(w in t for w in ["cr", "credit", "deposit"]) else "debit"
         )
     else:
-        # Fallback: detect from sign or 'DR'/'CR' suffix
         raw_amount = df.get(profile.amount_col or "amount", pd.Series(dtype=str))
         result["amount"], result["tx_type"] = zip(*raw_amount.apply(_parse_amount_with_type))
         result["amount"] = list(result["amount"])
@@ -274,7 +368,6 @@ def _generic_column_map(df: pd.DataFrame) -> pd.DataFrame:
 
     date_candidates  = ["date", "trans date", "transaction date", "value date", "posting date"]
     desc_candidates  = ["description", "narration", "details", "remarks", "particulars"]
-    amt_candidates   = ["amount", "debit", "credit", "withdrawal", "deposit"]
     bal_candidates   = ["balance", "ledger balance", "available balance", "closing balance"]
 
     date_col = next((col[c] for c in date_candidates if c in col), None)
@@ -292,7 +385,6 @@ def _generic_column_map(df: pd.DataFrame) -> pd.DataFrame:
     result["raw_desc"] = df[desc_col].fillna("").str.strip()
     result["balance"]  = df[bal_col].apply(parse_naira) if bal_col else None
 
-    # Find debit/credit or a single amount column
     debit_col  = col.get("debit") or col.get("withdrawals") or col.get("dr")
     credit_col = col.get("credit") or col.get("deposits") or col.get("cr")
     amt_col    = col.get("amount") or col.get("transaction amount")
@@ -327,7 +419,7 @@ def _parse_amount_with_type(value: str) -> tuple[float, str]:
         return amt, "credit"
     if is_debit:
         return amt, "debit"
-    return amt, "debit"  # conservative default
+    return amt, "debit"
 
 
 # ── Standardize ───────────────────────────────────────────────────────────────
@@ -335,11 +427,61 @@ def _parse_amount_with_type(value: str) -> tuple[float, str]:
 def _standardize(df: pd.DataFrame) -> pd.DataFrame:
     """
     Final standardization pass:
-    - Ensure all required columns exist
+    - Handles both profile-mapped columns (tx_date, raw_desc)
+      AND text-fallback columns (date, description)
     - Clean descriptions
     - Add channel, merchant, bank detection
     - Drop rows with no date or zero amount
     """
+    # Handle raw text fallback column names from _parse_pdf_text()
+    if "date" in df.columns and "tx_date" not in df.columns:
+        df["tx_date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+    if "description" in df.columns and "raw_desc" not in df.columns:
+        df["raw_desc"] = df["description"].fillna("").str.strip()
+
+    # Handle PDF table rows that came through with header-named columns
+    # Try to map common header variations to standard names
+    col_lower = {c.lower().strip(): c for c in df.columns}
+
+    if "tx_date" not in df.columns:
+        for candidate in ["date", "trans date", "transaction date", "value date", "posting date"]:
+            if candidate in col_lower:
+                df["tx_date"] = pd.to_datetime(df[col_lower[candidate]], errors="coerce").dt.date
+                break
+
+    if "raw_desc" not in df.columns:
+        for candidate in ["narration", "description", "details", "remarks", "particulars"]:
+            if candidate in col_lower:
+                df["raw_desc"] = df[col_lower[candidate]].fillna("").str.strip()
+                break
+
+    if "raw_desc" not in df.columns:
+        df["raw_desc"] = ""
+
+    # Amount & tx_type from PDF table rows
+    if "amount" not in df.columns or df["amount"].isna().all() or (df["amount"] == "").all():
+        # Try split debit/credit columns
+        debit_col  = next((col_lower[c] for c in ["debit", "withdrawals", "dr"] if c in col_lower), None)
+        credit_col = next((col_lower[c] for c in ["credit", "deposits", "cr"] if c in col_lower), None)
+        amt_col    = next((col_lower[c] for c in ["amount", "transaction amount"] if c in col_lower), None)
+
+        if debit_col and credit_col:
+            debit_amt  = df[debit_col].apply(parse_naira)
+            credit_amt = df[credit_col].apply(parse_naira)
+            df["amount"]  = debit_amt.where(debit_amt > 0, credit_amt)
+            df["tx_type"] = debit_amt.apply(lambda x: "debit" if x > 0 else "credit")
+        elif amt_col:
+            parsed = df[amt_col].apply(_parse_amount_with_type)
+            df["amount"]  = [p[0] for p in parsed]
+            df["tx_type"] = [p[1] for p in parsed]
+
+    if "tx_type" not in df.columns:
+        df["tx_type"] = "debit"
+
+    if "balance" not in df.columns:
+        bal_col = next((col_lower[c] for c in ["balance", "ledger balance", "closing balance"] if c in col_lower), None)
+        df["balance"] = df[bal_col].apply(parse_naira) if bal_col else None
+
     # Ensure raw_desc exists
     if "raw_desc" not in df.columns:
         df["raw_desc"] = df.get("description", "").fillna("")
@@ -377,11 +519,8 @@ def _clean_description(raw: str) -> str:
     """Remove noise, references, and normalize whitespace."""
     if not raw:
         return ""
-    # Remove long numeric reference codes
     cleaned = re.sub(r"\b\d{8,}\b", "", raw)
-    # Remove pipe-separated suffixes
     cleaned = re.sub(r"\|.*$", "", cleaned)
-    # Collapse whitespace
     cleaned = " ".join(cleaned.split()).strip()
     return cleaned[:255] if cleaned else raw[:255]
 
@@ -389,8 +528,8 @@ def _clean_description(raw: str) -> str:
 def _find_header_row(path: Path, max_scan: int = 15) -> int:
     """
     Scan the first `max_scan` lines to find the row index that contains
-    recognizable column headers (Date, Description, Amount, etc.).
-    Returns 0 if not found (no skip needed).
+    recognizable column headers.
+    Returns 0 if not found.
     """
     header_keywords = {
         "date", "trans date", "transaction date", "value date",
@@ -403,7 +542,6 @@ def _find_header_row(path: Path, max_scan: int = 15) -> int:
                 if i >= max_scan:
                     break
                 cols = {c.strip().lower().strip('"') for c in line.split(",")}
-                # If ≥2 header keywords found on this line, it's the header row
                 if len(cols & header_keywords) >= 2:
                     return i
     except Exception:
@@ -414,9 +552,8 @@ def _find_header_row(path: Path, max_scan: int = 15) -> int:
 def _drop_metadata_rows(df: pd.DataFrame) -> pd.DataFrame:
     """
     Drop leading rows that are bank header/metadata, not transactions.
-    Heuristic: keep rows where at least one column looks like a date or number.
     """
-    date_pattern = re.compile(r"\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|\d{4}-\d{2}-\d{2}")
+    date_pattern   = re.compile(r"\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}|\d{4}-\d{2}-\d{2}")
     amount_pattern = re.compile(r"[\d,]+\.\d{2}")
 
     def _is_data_row(row):
