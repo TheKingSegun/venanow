@@ -46,19 +46,6 @@ CLASSIFICATION_RULES: list[tuple[str, list[str]]] = [
         r"\bpiggyvest\b", r"\binvestment\s+return\b",
     ]),
 
-    # ── Subscriptions (check before misc) ─────────────────────────────────────
-    ("subscriptions", [
-        r"\bnetflix\b", r"\bspotify\b", r"\bapple\s+(music|tv|icloud|one)\b",
-        r"\bgoogle\s+(one|play|workspace|storage)\b", r"\bamazon\s+(prime|aws)\b",
-        r"\bdstv\b", r"\bgotvmax\b", r"\bstarplus\b", r"\bshowmax\b",
-        r"\bchatgpt\b", r"\bopenai\b", r"\bmidjourney\b", r"\bcanva\b",
-        r"\badobe\b", r"\bmicrosoft\s+(365|office)\b", r"\bzoom\b",
-        r"\bslack\b", r"\bnotion\b", r"\blinkedin\s+premium\b",
-        r"\bantivirus\b", r"\bvpn\b", r"\bweb\s+hosting\b",
-        r"\bdomain\s+renewal\b", r"\bsubscription\b",
-        r"\bmonthly\s+(plan|package|charge)\b",
-    ]),
-
     # ── Rent ──────────────────────────────────────────────────────────────────
     ("rent", [
         r"\brent\b", r"\bhouserent\b", r"\bhouse\s+rent\b",
@@ -77,6 +64,19 @@ CLASSIFICATION_RULES: list[tuple[str, list[str]]] = [
         r"\bairtel\s+home\b", r"\bmtn\s+home\b",
         r"\bgas\s+(bill|supply)\b", r"\bairgaz\b",
         r"\bservice\s+bill\b", r"\butility\b",
+    ]),
+
+    # ── Subscriptions (check before misc) ─────────────────────────────────────
+    ("subscriptions", [
+        r"\bnetflix\b", r"\bspotify\b", r"\bapple\s+(music|tv|icloud|one)\b",
+        r"\bgoogle\s+(one|play|workspace|storage)\b", r"\bamazon\s+(prime|aws)\b",
+        r"\bdstv\b", r"\bgotvmax\b", r"\bstarplus\b", r"\bshowmax\b",
+        r"\bchatgpt\b", r"\bopenai\b", r"\bmidjourney\b", r"\bcanva\b",
+        r"\badobe\b", r"\bmicrosoft\s+(365|office)\b", r"\bzoom\b",
+        r"\bslack\b", r"\bnotion\b", r"\blinkedin\s+premium\b",
+        r"\bantivirus\b", r"\bvpn\b", r"\bweb\s+hosting\b",
+        r"\bdomain\s+renewal\b", r"\bsubscription\b",
+        r"\bmonthly\s+(plan|package|charge)\b",
     ]),
 
     # ── Food & Dining ─────────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ CLASSIFICATION_RULES: list[tuple[str, list[str]]] = [
         r"\bcab\b", r"\btaxi\b", r"\bride\s+(sharing|hailing)\b",
         r"\bdanfo\b", r"\bbrt\b", r"\bbike\b", r"\bokada\b",
         r"\bfuel\b", r"\bpetrol\b", r"\bdiesel\b", r"\bgas\s+station\b",
-        r"\btotal\s+(oil|filling)\b", r"\bconoil\b", r"\boando\s+filling\b",
+        r"\btotal\s*(oil|filling|energies)\b", r"\bfilling\s+station\b", r"\bconoil\b", r"\boando\s+filling\b",
         r"\bflight\b", r"\bairline\b", r"\barik\b", r"\bair\s+peace\b",
         r"\bover(seas|flight)\b", r"\bairport\b",
         r"\bbus\s+(ticket|fare)\b", r"\btrain\b", r"\bferr(y|ies)\b",
