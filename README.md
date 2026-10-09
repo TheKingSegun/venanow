@@ -6,6 +6,10 @@ Many people in Lagos earn into one account and spend through three: a salary acc
 
 VenaNow reads the statement itself. Upload a PDF, CSV or Excel export and it returns categorised transactions, recurring payments, a 0 to 100 financial health score and a 30 day cash flow forecast.
 
+![VenaNow pipeline output on a sample GTBank statement](docs/screenshots/pipeline-output.png)
+
+*Real output from the pipeline on the synthetic GTBank sample: 211 transactions in 0.21 seconds. The gray bar is spending the classifier was not confident about, shown rather than hidden.*
+
 ---
 
 ## How it works
@@ -55,6 +59,7 @@ Stated plainly, so nobody has to guess what is finished:
 | Statement upload, background processing, job status, history, manual entries | Working |
 | Health score, forecaster, recommender engines | Built and tested, not yet wired to the database |
 | `/dashboard`, `/recommendations`, `/health-score` endpoints | Return placeholder responses until that wiring is done |
+| Cash flow forecaster | Gives wrong results on the sample: it projects a positive month-end balance of about ₦935k while expenses exceed income and the balance is already negative. Needs fixing before it is shown to users |
 | ML classifier | Built, but no trained model ships, so classification runs on rules alone |
 | Coverage | About 1 in 4 sample transactions still land in miscellaneous (51 of 211 on GTBank, 6 of 24 on OPay). The misses are Lagos food chains and online stores: Barcelos, Cold Stone, Tastee, Jumia, Konga. A merchant dictionary is the next step. |
 | Data | Sample statements are synthetic (`sample_data/generate_sample.py`, seed 42). Not yet validated on real statements at volume. |
@@ -72,15 +77,17 @@ uvicorn api.main:app --reload --port 8000
 python -m pytest tests -q
 ```
 
-Try it on a sample statement:
+Run the pipeline on a sample statement without the API:
 
-```bash
-curl -X POST http://localhost:8000/api/statements/upload \
-  -F "file=@sample_data/sample_statement_gtbank.csv" \
-  -F "user_id=1"
+```python
+from pipeline.processor import run_pipeline, result_to_dict
+result = result_to_dict(run_pipeline("sample_data/sample_statement_gtbank.csv"))
+print(result["summary"], result["category_spend"])
 ```
 
-Interactive API docs: `http://localhost:8000/api/docs`
+The upload endpoint requires a Supabase login token (the user ID comes from the token, not a form field), so set the Supabase keys in `.env` before calling it. Interactive API docs are at `http://localhost:8000/api/docs`:
+
+![VenaNow API endpoints](docs/screenshots/api-docs.png)
 
 ## Project layout
 
